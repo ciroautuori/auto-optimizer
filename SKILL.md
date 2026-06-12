@@ -1,172 +1,118 @@
 ---
 name: auto-optimizer
-description: >
-  Automatic token and cost optimization skill for Claude Code.
-  Activates automatically on EVERY session — no manual invocation needed.
-  Handles: /compact at 80k context, /clear between tasks, agent routing
-  (free models default, haiku for simple subagents), session cap at 2h,
-  browser/Playwright as last resort, code graph queries before reading
-  source files, session memory and handoff at end of session.
-  Triggers: session start, new task, high context, subagent spawn,
-  browser use, source file read, session end. ALWAYS ON.
+description: Use when starting a session, switching to a new task, about to spawn a subagent, about to read a large file, about to fetch web content, or when the conversation has grown long. Also use when the user mentions "optimize tokens", "reduce cost", "context too big", "hitting usage limits", or asks for a clean session.
 ---
 
-# AUTO-OPTIMIZER — Claude Code Token & Cost Control
+# Auto-Optimizer — Token & Cost Hygiene for Claude Code
 
-> Runs automatically. No commands needed. Adapts to your tool stack.
+> Goal: maximum information at minimum cost — not fewer tokens for their own
+> sake. A short, well-fed context beats a long, noisy one.
+>
+> Everything in this skill uses built-in Claude Code features only.
+> No external tools, no other AI providers, no dependencies.
 
----
+## Know what you're optimizing
 
-## PHASE 0 — START OF SESSION
+Check the user's plan once per session (ask if unknown) and optimize the
+right metric:
 
-Before doing anything else:
+| Plan | You pay with | Check via | Optimize for |
+|------|--------------|-----------|--------------|
+| Pro / Max subscription | Usage limits (5-hour and weekly windows) | `/usage` | Fewer tokens per task → more work before hitting limits |
+| API / pay-as-you-go | Dollars per token | `/cost` | Smaller context, cheaper models |
+| Team / Enterprise | Seat or usage policy | Org admin | Same as above |
 
-```
-1. Load previous session state
-   → read ~/.claude/sessions/latest-handoff.md  (if exists)
-   → load memory / recall tool output           (if configured)
-   → run code graph query for project state     (if graphify/similar available)
-   → result: clean context, full information
+The rules below are identical for every plan — only the metric differs.
+Every message resends the whole conversation context, so context size is
+the single biggest cost lever on any plan.
 
-2. Check current context size
-   → if any context already loaded > 40k: consider /compact before starting
-```
+## Phase 1 — Session start
 
----
+1. If `~/.claude/sessions/` contains a recent handoff file for this
+   project, read it before touching anything else.
+2. Get oriented with Glob and Grep — do not read whole source files just
+   to "understand the project". CLAUDE.md and the handoff already carry
+   the durable context.
 
-## PHASE 1 — CONTEXT CHECK (before every tool call)
+## Phase 2 — During the session: context checks
 
-```
-context < 40k   → proceed normally
-context 40-80k  → /compact before loading large files or spawning subagents
-context > 80k   → /compact IMMEDIATELY, then proceed
-context > 120k  → /compact REQUIRED + warn user
-```
+Claude cannot run `/compact` or `/clear` itself — these are user commands.
+The skill's job is to *recommend them at the right moment* and to keep the
+context from growing in the first place.
 
----
+| Signal | Action |
+|--------|--------|
+| Conversation getting long (many file reads, long tool outputs) | Recommend `/compact` to the user **now**, before loading more |
+| About to load large files or spawn subagents in an already-long session | Recommend `/compact` first |
+| User switches to an unrelated task | Write a handoff file, then recommend `/clear` |
+| Session active for hours on the same thread | Recommend `/compact` and flag it to the user |
 
-## PHASE 2 — SESSION CHECK (ongoing)
+Don't wait for auto-compact to fire — by then the expensive tokens are
+already spent. Compact early, compact deliberately.
 
-```
-New task, different from previous?  → suggest /clear before starting
-Session active > 2 hours?           → run /compact aggressively, warn user
-Background loop with no output?     → pause and ask if it should continue
-```
+## Phase 3 — Routing: cheapest capable option
 
----
-
-## PHASE 3 — ROUTING (before every LLM or tool call)
-
-**Agent routing — cheapest capable model:**
-```
-Task is simple (< 10 steps, touches 1 file)  → do it DIRECTLY, no subagent
-Task is parallelizable + independent         → subagent with cheap model (haiku/flash)
-Task is sequential                           → do in sequence, NO subagent
-Task requires max quality                    → full model only if explicitly requested
-DEFAULT always                               → free tier model (opencode/DeepSeek/Gemini)
-```
-
-**Tool routing — cheapest capable tool:**
-```
-Question about codebase structure  → code graph query BEFORE opening files
-  (graphify, ctags, tree-sitter, ast-grep, or similar)
-Cross-session recall               → memory tool BEFORE raw file search
-Web scraping / data fetch          → curl / fetch / official API FIRST
-  → Playwright / browser           → LAST RESORT only, close immediately after
-Reading a file > 200 lines         → grep / head / tail / ripgrep FIRST
-Fleet / remote dispatch            → only for tasks that take > 15 min
-```
-
----
-
-## PHASE 4 — END OF SESSION (automatic, no prompting needed)
-
-Run this after every significant work block, unprompted:
+**Subagent routing** (in order — first match wins):
 
 ```
-1. /handoff — generate session handoff
-   save to: ~/.claude/sessions/YYYY-MM-DD-<task-slug>.md
-   include:
-     - current state of running services
-     - tasks completed this session
-     - tasks still open (with context)
-     - key decisions made
-     - exact next steps for next session
-
-2. Update indexes
-   → code graph:  graphify update .  (or equivalent)
-   → docs/wiki:   update your indexing tool
-   → memory:      add session summary to memory file
-
-3. Update task tracking
-   → mark completed tasks as done
-   → update README.md if architecture changed
-
-4. /clear  ← start next session fresh with zero context cost
+Task < 10 steps or touches 1-2 files  → NO subagent. Do it directly.
+Task is sequential (A then B then C)  → NO subagent. Sequence lives in the main thread.
+Parallel + independent + simple       → subagent with model: haiku
+Parallel + independent + complex      → subagent with model: sonnet
+Opus subagents                        → only on explicit user request
 ```
 
----
+Each subagent is a full separate request with its own context. Spawning
+one for a two-file fix costs more than just doing the fix.
 
-## NUMERIC THRESHOLDS — reference
-
-| Trigger | Threshold | Action |
-|---------|-----------|--------|
-| Context → /compact | > 80k tokens | immediate /compact |
-| Session → /compact | > 2h active | aggressive /compact |
-| Session → /clear | task switch | suggest /clear |
-| Subagent model | simple task | cheap model (haiku/flash) |
-| Subagent spawn | < 10 steps | NO subagent, do directly |
-| Browser use | API available | use API instead |
-| File read | > 200 lines | grep/head first |
-| Remote dispatch | < 15 min task | do locally |
-
----
-
-## TOOL PRIORITY STACK
-
-Adapt this to your actual installed tools:
+**Tool routing** (cheapest tool that answers the question):
 
 ```
-RECALL / SEARCH
-  Priority 1: your memory/recall tool     (cross-session, hot docs)
-  Priority 2: code graph tool             (structure queries, no file reads)
-  Priority 3: docs/wiki index             (after updates only)
-  Avoid:      raw file reads              (expensive, loads context fast)
-
-BROWSER / FETCH
-  Priority 1: curl / wget / fetch         (free, fast)
-  Priority 2: official API               (if available)
-  Priority 3: Playwright / browser        (last resort, close after use)
-
-LLM ROUTING
-  Priority 1: free tier model             (DeepSeek, Gemini Flash, etc.)
-  Priority 2: cheap fast model            (haiku, flash) for subagents
-  Priority 3: standard model             (sonnet) for complex tasks
-  Priority 4: max model                  (opus) only on explicit request
-
-SESSION HYGIENE
-  /compact     when context > 80k or session > 2h
-  /handoff     at end of every long session
-  /clear       when switching to a new unrelated task
+"Where is X / what calls Y?"      → Grep / Glob — never read files to browse
+File > 200 lines                  → Grep for the section, or Read with offset+limit
+Web page content                  → WebFetch or curl FIRST
+Browser automation (Playwright)   → LAST RESORT, only when the page needs JS
+                                     or interaction; close the browser right after
 ```
 
----
+## Phase 4 — Session end (before /clear, always)
 
-## TARGET METRICS
+A handoff makes `/clear` nearly free: the context resets, the knowledge
+doesn't.
 
-Use your Claude Code usage report to track improvement:
+1. Write a handoff file to `~/.claude/sessions/YYYY-MM-DD-<task-slug>.md`:
 
-| Metric | Typical before | Target |
-|--------|---------------|--------|
-| Sessions > 150k context | ~75% | < 20% |
-| Sessions > 8h | ~60% | < 15% |
-| Subagent-heavy sessions | ~50% | < 25% |
-| Browser tool % of total | ~7% | < 2% |
+   ```markdown
+   # Handoff — <title>
+   > Next session goal: <one precise line>
 
----
+   ## Done this session        (with commit hashes)
+   ## Decisions made           (one line each, with the why)
+   ## Next steps               (numbered, actionable, commands ready)
+   ## Quick references         (paths, key files, smoke-test commands)
+   ```
 
-## CUSTOMIZATION
+2. Update project memory (CLAUDE.md or auto memory) only with facts that
+   are non-obvious and durable — not things git history already records.
+3. Recommend `/clear` so the next session starts fresh.
 
-Edit the thresholds in this file to match your workflow.
-The description field controls when this skill auto-activates —
-keep the trigger keywords to ensure it fires on every session.
+Cost: ~1–2k tokens. Saving: the tens of thousands the next session would
+burn re-deriving the same state.
+
+## Anti-patterns — stop if you catch yourself doing these
+
+| Anti-pattern | Correction |
+|--------------|-----------|
+| "I'll read the file to see how it's structured" | Grep/Glob first; read only the lines you need |
+| "I'll spawn a subagent for this 2-file fix" | Do it directly in the main thread |
+| "Context is huge but I'm almost done" | Recommend `/compact` now, then finish |
+| "Just /clear, I'll remember the state" | Handoff file FIRST, always |
+| "I'll open the browser to check the page" | WebFetch/curl first; browser only if JS required |
+| "Chain subagents: A, then B, then C" | Sequential work belongs in the main thread |
+
+## Customization
+
+Edit this file at `~/.claude/skills/auto-optimizer/SKILL.md` to tune the
+heuristics (subagent step threshold, file-size threshold, handoff
+location) to your workflow. The `description` field controls when Claude
+Code loads the skill — keep the trigger phrases if you edit it.

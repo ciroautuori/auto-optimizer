@@ -1,148 +1,142 @@
-# ⚡ claude-code-auto-optimizer
+# ⚡ auto-optimizer
 
-> A Claude Code skill that **automatically** manages token usage, session hygiene, agent routing, and tool prioritization — so you never think about cost again.
+> A Claude Code skill that keeps your sessions cheap and clean — context
+> hygiene, smart subagent routing, and session handoffs, using **only
+> built-in Claude Code features**. Zero dependencies.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Claude Code](https://img.shields.io/badge/Claude%20Code-skill-blueviolet)](https://docs.anthropic.com/claude-code)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-skill-blueviolet)](https://docs.anthropic.com/en/docs/claude-code)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 ---
 
 ## The problem
 
-If you use Claude Code heavily, you've probably seen this in your usage report:
+Claude Code resends the entire conversation context with every message.
+If you work in long sessions, that means:
 
-- **74–89%** of sessions running at **>150k context** (expensive even when cached)
-- **61–64%** of sessions lasting **8+ hours** (background loops nobody's watching)
-- **53%** of sessions **subagent-heavy** (each subagent = a full separate request)
-- **6–7%** of usage from **Playwright/browser** (the most expensive tool per call)
+- Sessions running at **150k+ context** burn tokens on every single turn
+- A subagent spawned for a trivial fix costs **a full separate request**
+- Browser automation (Playwright MCP) is one of the most expensive tools
+  per call — screenshots and page snapshots are thousands of tokens each
+- `/clear` feels risky, so nobody runs it — and context never resets
 
-Claude Code even tells you what to do — `/compact mid-task`, `/clear between tasks`, cheaper models for simple subagents — but you have to remember to do it every time.
+Claude Code's docs already tell you the fixes: `/compact` mid-task,
+`/clear` between tasks, `haiku` for simple subagents. But you have to
+remember to do it every time, on every session.
 
-**This skill makes it automatic.**
+**This skill makes Claude remember for you.**
 
 ---
 
 ## What it does
 
-Once installed, Claude Code will automatically:
+Once installed, in every session where it triggers, Claude will:
 
-| Trigger | Action |
-|---------|--------|
-| Context > 80k tokens | `/compact` immediately |
-| Session active > 2h | `/compact` aggressively + notify you |
-| Switching to a new task | Suggest `/clear` |
-| Spawning a subagent for a simple task | Block it, do it directly instead |
-| Simple subagent needed | Route to cheaper model (haiku) |
-| About to open a large source file | Run code graph query first |
-| About to use browser/Playwright | Try `curl`/`fetch`/API first |
-| End of a long session | Auto-generate `/handoff` + run maintenance |
+| Situation | Behavior |
+|-----------|----------|
+| Conversation grows long | Recommends `/compact` *before* loading more files |
+| You switch to a new task | Writes a handoff file, recommends `/clear` |
+| Simple task (< 10 steps) | Refuses to spawn a subagent — does it directly |
+| Parallel simple subtasks | Routes subagents to `haiku` instead of your main model |
+| Codebase questions | Uses Grep/Glob instead of reading whole files |
+| Web content needed | Tries WebFetch/curl before opening a browser |
+| End of session | Writes a structured handoff to `~/.claude/sessions/` |
+
+**Honest note:** `/compact` and `/clear` are user commands — Claude cannot
+run them for you. The skill makes Claude *recommend them at the right
+moment* and, more importantly, changes Claude's own behavior so context
+grows slower in the first place.
+
+---
+
+## Works with your plan
+
+The skill optimizes whichever metric your plan actually bills:
+
+| Plan | What you're saving | Where to check |
+|------|-------------------|----------------|
+| **Pro / Max** | Usage limits (5-hour + weekly windows) — fewer tokens per task means more work before you hit them | `/usage` |
+| **API (pay-as-you-go)** | Dollars — smaller context and cheaper subagent models directly cut spend | `/cost` |
+| **Team / Enterprise** | Same levers, policy set by your org | admin console |
 
 ---
 
 ## Install
 
-### One-liner
+### Manual (recommended — read what you run)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_USERNAME/claude-code-auto-optimizer/main/install.sh | bash
-```
-
-### Manual
-
-```bash
-git clone https://github.com/YOUR_USERNAME/claude-code-auto-optimizer
-cd claude-code-auto-optimizer
+git clone https://github.com/ciroautuori/auto-optimizer
+cd auto-optimizer
 bash install.sh
 ```
 
+### One-liner
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ciroautuori/auto-optimizer/main/install.sh | bash
+```
+
 The installer:
+
 1. Copies `SKILL.md` to `~/.claude/skills/auto-optimizer/`
-2. Creates/updates `~/.claude/CLAUDE.md` with global trigger rules
-3. Optionally installs companion tools (see below)
+2. Optionally appends a compact rules block to `~/.claude/CLAUDE.md`
+   (asks first — your file, your call)
+3. Creates `~/.claude/sessions/` for handoff files
+
+Uninstall: delete `~/.claude/skills/auto-optimizer/` and remove the
+`AUTO-OPTIMIZER` block from `~/.claude/CLAUDE.md`.
 
 ---
 
 ## How it works
 
-Claude Code reads the `description` field in `SKILL.md` at the start of every session. Because the description explicitly lists all trigger conditions (`session start`, `new task`, `high context`, `subagent spawn`, `file read`, `session end`), Claude Code applies the skill **automatically** — no commands needed.
+Two layers, both plain markdown:
 
-The skill enforces a **3-phase cycle**:
+1. **The skill** (`~/.claude/skills/auto-optimizer/SKILL.md`) — Claude
+   Code loads skills on demand by matching their `description` field.
+   This one triggers on session starts, task switches, subagent spawns,
+   large file reads, web fetches, and long conversations.
+2. **The CLAUDE.md block** (optional) — global memory is loaded into
+   *every* session, so the core rules apply even when the skill isn't
+   explicitly triggered.
+
+The core idea is a three-phase cycle:
 
 ```
-START OF SESSION
-  → load memory/handoff from previous session
-  → query code graph (no need to read source files)
-  → check wiki/docs index
-  → result: clean context, full information
-
-DURING SESSION
-  → check context every tool call (>80k → /compact)
-  → route to cheapest capable model
-  → use curl/API before browser
-  → query code graph before opening files
-
-END OF SESSION (automatic, no prompting needed)
-  → generate /handoff file for next session
-  → update indexes (code graph + docs)
-  → update memory
-  → /clear
+SESSION START   → read previous handoff → orient with Grep/Glob, not file dumps
+DURING          → recommend /compact early · cheapest capable model/tool
+SESSION END     → write handoff → update memory → recommend /clear
 ```
 
-**Key insight:** with `/handoff` + session memory + code graph queries, running `/clear` is nearly free — you lose nothing, you just start fresh.
+**Key insight:** a handoff file costs ~1–2k tokens and makes `/clear`
+nearly free. The context resets; the knowledge doesn't.
+
+See [tools.md](tools.md) for the built-in Claude Code commands the skill
+leans on (`/compact`, `/clear`, `/usage`, `/cost`, `/model`, subagents).
 
 ---
 
-## Companion tools
+## Target metrics
 
-The skill works standalone, but it's most powerful when paired with these tools. Each one is optional and the skill degrades gracefully without them.
+Pull your numbers from Claude Code's usage data, then track:
 
-| Tool | What it does | Why it matters |
-|------|-------------|----------------|
-| **[opencode](https://github.com/sst/opencode)** | Routes LLM calls to DeepSeek (free tier) | Makes most agent work cost $0 |
-| **[graphify](docs/tools.md#graphify)** | Builds a knowledge graph of your codebase | Query structure without reading files |
-| **[handoff](docs/tools.md#handoff)** | Saves session state for next session | `/clear` without losing context |
-| **[qmd](docs/tools.md#qmd)** | Indexes your wiki/docs for semantic search | Fast recall without loading full docs |
-| **Any memory tool** | Cross-session recall | e.g. Claude Code's built-in `/memory` |
+| Metric | Common in heavy use | Target |
+|--------|--------------------:|-------:|
+| Sessions exceeding 150k context | most | < 20% |
+| Subagent-heavy sessions | ~half | < 25% |
+| Browser/Playwright share of tool calls | varies | < 2% |
 
-See [docs/tools.md](docs/tools.md) for installation instructions.
-
----
-
-## Configuration
-
-After install, edit `~/.claude/skills/auto-optimizer/SKILL.md` to customize:
-
-```yaml
-# Change these thresholds to match your workflow
-COMPACT_THRESHOLD: 80k tokens     # default: 80k
-SESSION_MAX_HOURS: 2              # default: 2h
-SUBAGENT_MAX_STEPS: 10           # default: 10 steps
-```
-
-See [docs/advanced.md](docs/advanced.md) for full configuration options.
-
----
-
-## Real-world results
-
-Before/after from a real project (7-day period):
-
-| Metric | Before | After | Change |
-|--------|--------|-------|--------|
-| Sessions >150k context | 74% | ~18% | **−76%** |
-| Sessions >8h | 61% | ~12% | **−80%** |
-| Subagent-heavy sessions | 53% | ~20% | **−62%** |
-| Browser/Playwright usage | 7% | ~1.5% | **−78%** |
+Your numbers will vary — the point is the direction, not the exact figure.
 
 ---
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). PRs welcome — especially:
-- Adapters for other memory/recall tools
-- Tool-specific optimizations
-- Non-English versions of the skill
+See [CONTRIBUTING.md](CONTRIBUTING.md). PRs welcome — especially
+real-world before/after usage stats, threshold tuning for different
+codebase sizes, and translations.
 
 ---
 
