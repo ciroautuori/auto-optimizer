@@ -34,21 +34,27 @@ the single biggest cost lever on any plan.
    to "understand the project". CLAUDE.md and the handoff already carry
    the durable context.
 
-## Phase 2 — During the session: context checks
+## Phase 2 — During the session: keep context lean automatically
 
-Claude cannot run `/compact` or `/clear` itself — these are user commands.
-The skill's job is to *recommend them at the right moment* and to keep the
-context from growing in the first place.
+Claude Code **auto-compacts on its own** near the context limit, and the
+`PreCompact` hook auto-preserves the task state in the summary. Do **not**
+stop work to tell the user to run `/compact` — that is noise, not
+optimization. Your job is to stop context from bloating in the first
+place, silently, on every action you take:
 
-| Signal | Action |
-|--------|--------|
-| Conversation getting long (many file reads, long tool outputs) | Recommend `/compact` to the user **now**, before loading more |
-| About to load large files or spawn subagents in an already-long session | Recommend `/compact` first |
-| User switches to an unrelated task | Write a handoff file, then recommend `/clear` |
-| Session active for hours on the same thread | Recommend `/compact` and flag it to the user |
+| Signal | Automatic action — no user prompt |
+|--------|-----------------------------------|
+| About to read a large file | Grep, or Read with offset+limit — never the whole file to "understand it" |
+| About to spawn a subagent | Apply Phase 3 routing; a subagent's context never returns, so isolate cost there |
+| About to fetch a web page | WebFetch / curl first; Playwright only if the page needs JS, close it immediately |
+| Context already large | Tighten routing further and keep working; let built-in auto-compact fire when it must |
+| User switches to an unrelated task | Write the handoff file (Phase 4) **automatically**, then carry on |
 
-Don't wait for auto-compact to fire — by then the expensive tokens are
-already spent. Compact early, compact deliberately.
+The only time you surface context cost to the user: they are about to hit
+a hard usage or billing limit they would want to decide about (check
+`/usage` or `/cost`). Otherwise optimize silently — never hand a
+`/compact` or `/clear` decision back to the user as a substitute for
+doing the cheap thing yourself.
 
 ## Phase 3 — Routing: cheapest capable option
 
@@ -94,7 +100,9 @@ doesn't.
 
 2. Update project memory (CLAUDE.md or auto memory) only with facts that
    are non-obvious and durable — not things git history already records.
-3. Recommend `/clear` so the next session starts fresh.
+3. `/clear` is terminal (it ends the thread) so it stays the user's call,
+   but the handoff above is written *automatically* first — so whenever
+   they clear, nothing is lost. Don't nag; just keep the handoff current.
 
 Cost: ~1–2k tokens. Saving: the tens of thousands the next session would
 burn re-deriving the same state.
@@ -105,7 +113,8 @@ burn re-deriving the same state.
 |--------------|-----------|
 | "I'll read the file to see how it's structured" | Grep/Glob first; read only the lines you need |
 | "I'll spawn a subagent for this 2-file fix" | Do it directly in the main thread |
-| "Context is huge but I'm almost done" | Recommend `/compact` now, then finish |
+| "Context is huge but I'm almost done" | Tighten reads/routing and finish; auto-compact handles the rest — don't stop to ask |
+| "I'll tell the user to /compact" | Optimize silently instead; only flag a real usage/billing limit |
 | "Just /clear, I'll remember the state" | Handoff file FIRST, always |
 | "I'll open the browser to check the page" | WebFetch/curl first; browser only if JS required |
 | "Chain subagents: A, then B, then C" | Sequential work belongs in the main thread |
