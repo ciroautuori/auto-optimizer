@@ -50,6 +50,35 @@ grows slower in the first place.
 
 ---
 
+## Automatic session hygiene (hooks)
+
+Beyond the skill's in-session behavior, `install.sh` wires three Claude Code
+lifecycle hooks so the full session loop runs **without you asking**:
+
+| Hook | Script | Does |
+|------|--------|------|
+| `SessionStart` | `scripts/session-init.sh` | Scans the repo + previous handoffs + planning files, (re)builds `docs/.session/STATE.md`, injects a state summary so you never lose the thread |
+| `Stop` | `scripts/stop-nudge.sh` | Once per session (non-blocking): reminds Claude to run the `handoff` skill, tick the roadmap, add a memory line, update STATE — before you `/clear` |
+| `SessionEnd` | `scripts/session-flush.sh` | The hard guarantee, $0, no LLM: `qmd update+embed`, `graphify update .`, snapshot `docs/HANDOFF-latest.md`, `git commit` |
+
+```
+SessionStart (init/scan) → STATE.md ──► work ──► Stop (nudge handoff) ──► SessionEnd (flush+commit)
+        ▲                                                                          │
+        └──────────────────────── loop: next session resumes from STATE ◄──────────┘
+```
+
+It **reuses** the `planning-with-files` skill (task ledger + auto-recovery after
+`/clear`) and the `handoff` skill (narrative) instead of reinventing them.
+
+> **Heads up — the flush layer is no longer zero-dependency.** `session-flush.sh`
+> requires `qmd` and `graphify` on your `PATH` and fails loud if they're missing.
+> The skill + the SessionStart/Stop layers stay dependency-free; only the
+> mechanical flush needs them. `install.sh` warns you if either is absent.
+
+The hooks are merged into `~/.claude/settings.json` (backed up first, existing
+hooks preserved). Run `bash tests/smoke.sh` to see the whole loop exercised
+against a throwaway repo.
+
 ## Works with your plan
 
 The skill optimizes whichever metric your plan actually bills:

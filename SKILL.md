@@ -26,6 +26,33 @@ The rules below are identical for every plan — only the metric differs.
 Every message resends the whole conversation context, so context size is
 the single biggest cost lever on any plan.
 
+## Phase 0 — The automatic loop (installed hooks)
+
+`install.sh` wires three Claude Code lifecycle hooks into `~/.claude/settings.json`
+so session hygiene happens **without anyone asking**. The loop, per project:
+
+```
+SessionStart → scripts/session-init.sh
+   scans the repo + previous docs/HANDOFF-*.md + planning-with-files artifacts,
+   builds/refreshes docs/.session/STATE.md (open tasks · handoff index · facts),
+   injects a state summary so the thread is never lost. (startup=INIT, resume/clear=RELOAD)
+
+Stop → scripts/stop-nudge.sh
+   ONCE per session (marker-guarded, non-blocking): reminds Claude to run the
+   `handoff` skill, tick the roadmap, add a MEMORY line, update STATE — before /clear.
+
+SessionEnd → scripts/session-flush.sh   ← the hard guarantee ($0, no LLM)
+   qmd update+embed -c <coll> · graphify update . · snapshot docs/HANDOFF-latest.md
+   · git add docs/ && commit (only if changed). SessionEnd is observability-only and
+   cannot inject — so the mechanical flush lives here and always fires (clear/logout/exit).
+        └──► next SessionStart resumes from STATE.md
+```
+
+**Reused, not reinvented:** the `planning-with-files` skill (file-based task ledger +
+auto-recovery after /clear) feeds STATE.md; the `handoff` skill writes the narrative.
+**Hard deps for the flush layer:** `qmd`, `graphify` (fail loud if absent).
+`docs/.session/STATE.md` is the single "don't lose the thread" ledger — read it first.
+
 ## Phase 1 — Session start
 
 1. If `~/.claude/sessions/` contains a recent handoff file for this
@@ -83,6 +110,11 @@ Browser automation (Playwright)   → LAST RESORT, only when the page needs JS
 
 ## Phase 4 — Session end (before /clear, always)
 
+> Most of this is now **automatic** via the Phase 0 hooks: the mechanical flush
+> (qmd/graphify/snapshot/commit) runs itself at `SessionEnd`, and the `Stop`
+> nudge reminds Claude to do the narrative parts. The steps below are what that
+> nudge asks for — do them when prompted; don't hand the decision back to the user.
+
 A handoff makes `/clear` nearly free: the context resets, the knowledge
 doesn't.
 
@@ -100,9 +132,27 @@ doesn't.
 
 2. Update project memory (CLAUDE.md or auto memory) only with facts that
    are non-obvious and durable — not things git history already records.
-3. `/clear` is terminal (it ends the thread) so it stays the user's call,
-   but the handoff above is written *automatically* first — so whenever
-   they clear, nothing is lost. Don't nag; just keep the handoff current.
+3. **GOLDEN RULE — always print the restart prompt before `/clear`.** Never
+   let the user `/clear` without first giving them a ready-to-paste kickoff
+   prompt for the next session. Output it in a fenced block so they can copy
+   it verbatim. It must:
+   - point to the handoff file(s) + key memories to load FIRST;
+   - state the next concrete task in one line (the "next session goal");
+   - carry the hard constraints (deploy gates, prod-safety, token discipline);
+   - tell them what NOT to redo (already-done work).
+   Template:
+   ```
+   Sessione: <next goal>. Carica stato PRIMA di agire:
+   1. <handoff path(s)>
+   2. memorie: <slugs>
+   GIÀ FATTO (non rifare): <bullets>
+   TASK: <one precise line + acceptance/verifier>
+   VINCOLI: <deploy gate / prod-safety / token discipline>
+   ```
+4. `/clear` is terminal (it ends the thread) so it stays the user's call,
+   but the handoff file + the restart prompt above are produced
+   *automatically* first — so whenever they clear, nothing is lost. Don't
+   nag; just keep the handoff current and always hand over the kickoff prompt.
 
 Cost: ~1–2k tokens. Saving: the tens of thousands the next session would
 burn re-deriving the same state.

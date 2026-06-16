@@ -30,6 +30,78 @@ echo -e "${GREEN}✓ Skill installed: $SKILL_DIR/SKILL.md${NC}"
 mkdir -p "$HOME/.claude/sessions"
 echo -e "${GREEN}✓ Created ~/.claude/sessions/ for handoff files${NC}"
 
+# 2b — Install hook scripts (the automatic session-hygiene loop)
+echo -e "${YELLOW}→ Installing hook scripts...${NC}"
+if [ -d "./scripts" ]; then
+  cp -r ./scripts "$SKILL_DIR/scripts"
+else
+  mkdir -p "$SKILL_DIR/scripts/lib"
+  for f in session-init.sh stop-nudge.sh session-flush.sh lib/common.sh lib/state-template.md; do
+    curl -fsSL "$REPO/scripts/$f" -o "$SKILL_DIR/scripts/$f"
+  done
+fi
+chmod +x "$SKILL_DIR"/scripts/*.sh "$SKILL_DIR"/scripts/lib/*.sh 2>/dev/null || true
+echo -e "${GREEN}✓ Hook scripts installed: $SKILL_DIR/scripts/${NC}"
+
+# 2c — Hard-dep check (the flush layer needs these; fail loud, don't abort)
+for dep in qmd graphify; do
+  if ! command -v "$dep" >/dev/null 2>&1; then
+    echo -e "${YELLOW}⚠ HARD DEP MISSING: '$dep' not on PATH — SessionEnd flush will skip it loudly until installed${NC}"
+  fi
+done
+
+# 2d — Merge the 3 lifecycle hooks into ~/.claude/settings.json (backup + merge, never overwrite)
+SETTINGS="$HOME/.claude/settings.json"
+echo -e "${YELLOW}→ Merging SessionStart / Stop / SessionEnd hooks into settings.json...${NC}"
+SKILL_DIR="$SKILL_DIR" python3 - <<'PY'
+import json, os, sys, shutil
+
+settings = os.path.expanduser("~/.claude/settings.json")
+skill = os.environ["SKILL_DIR"]
+scripts = os.path.join(skill, "scripts")
+
+want = {
+    "SessionStart": f"bash {scripts}/session-init.sh",
+    "Stop":         f"bash {scripts}/stop-nudge.sh",
+    "SessionEnd":   f"bash {scripts}/session-flush.sh",
+}
+
+data = {}
+if os.path.exists(settings):
+    try:
+        with open(settings) as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"  ! settings.json unreadable ({e}); leaving it untouched", file=sys.stderr)
+        sys.exit(0)
+    shutil.copy2(settings, settings + ".bak")
+    print("  ✓ backed up settings.json → settings.json.bak")
+
+hooks = data.setdefault("hooks", {})
+changed = False
+for event, cmd in want.items():
+    entries = hooks.setdefault(event, [])
+    present = any(
+        h.get("command") == cmd
+        for entry in entries
+        for h in entry.get("hooks", [])
+    )
+    if present:
+        continue
+    entries.append({"hooks": [{"type": "command", "command": cmd}]})
+    changed = True
+    print(f"  ✓ added {event} hook")
+
+if changed:
+    os.makedirs(os.path.dirname(settings), exist_ok=True)
+    with open(settings, "w") as f:
+        json.dump(data, f, indent=2)
+    print("  ✓ settings.json updated (existing hooks preserved)")
+else:
+    print("  (hooks already present — nothing to do)")
+PY
+echo -e "${GREEN}✓ Hooks merged${NC}"
+
 # 3 — Optional: global CLAUDE.md rules block
 OPTIMIZER_BLOCK='
 ## ⚡ AUTO-OPTIMIZER rules
