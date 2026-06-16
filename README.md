@@ -1,8 +1,10 @@
 # ⚡ auto-optimizer
 
-> A Claude Code skill that keeps your sessions cheap and clean — context
-> hygiene, smart subagent routing, and session handoffs, using **only
-> built-in Claude Code features**. Zero dependencies.
+> A Claude Code skill + hook loop that keeps your sessions cheap and clean —
+> context hygiene, smart subagent routing, and **automatic** session handoffs.
+> The **skill core is dependency-free** (built-in Claude Code features only);
+> the optional **automatic hook loop** (see below) adds a full session flush
+> and needs `qmd` + `graphify` on your `PATH`.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude%20Code-skill-blueviolet)](https://docs.anthropic.com/en/docs/claude-code)
@@ -110,33 +112,41 @@ curl -fsSL https://raw.githubusercontent.com/ciroautuori/auto-optimizer/main/ins
 The installer:
 
 1. Copies `SKILL.md` to `~/.claude/skills/auto-optimizer/`
-2. Optionally appends a compact rules block to `~/.claude/CLAUDE.md`
+2. Copies the hook `scripts/` to `~/.claude/skills/auto-optimizer/scripts/`
+   and **merges** the `SessionStart` / `Stop` / `SessionEnd` hooks into
+   `~/.claude/settings.json` (backs it up first, never overwrites existing hooks)
+3. Warns loudly if the flush deps (`qmd`, `graphify`) are missing from `PATH`
+4. Optionally appends a compact rules block to `~/.claude/CLAUDE.md`
    (asks first — your file, your call)
-3. Creates `~/.claude/sessions/` for handoff files
+5. Creates `~/.claude/sessions/` for handoff files
 
-Uninstall: delete `~/.claude/skills/auto-optimizer/` and remove the
-`AUTO-OPTIMIZER` block from `~/.claude/CLAUDE.md`.
+Uninstall: delete `~/.claude/skills/auto-optimizer/`, remove the three hook
+entries from `~/.claude/settings.json` (or restore `settings.json.bak`), and
+remove the `AUTO-OPTIMIZER` block from `~/.claude/CLAUDE.md`.
 
 ---
 
 ## How it works
 
-Two layers, both plain markdown:
+Three layers:
 
 1. **The skill** (`~/.claude/skills/auto-optimizer/SKILL.md`) — Claude
    Code loads skills on demand by matching their `description` field.
    This one triggers on session starts, task switches, subagent spawns,
    large file reads, web fetches, and long conversations.
-2. **The CLAUDE.md block** (optional) — global memory is loaded into
-   *every* session, so the core rules apply even when the skill isn't
-   explicitly triggered.
+2. **The hook loop** (`scripts/` + 3 entries in `settings.json`) — runs the
+   session lifecycle *without being asked*: `SessionStart` rebuilds the STATE
+   ledger, `Stop` nudges the narrative handoff, `SessionEnd` runs the
+   mechanical flush (qmd + graphify + snapshot + commit). See the section above.
+3. **The CLAUDE.md block** (optional) — global memory loaded into *every*
+   session, so the core rules apply even when the skill isn't triggered.
 
-The core idea is a three-phase cycle:
+The core idea is a three-phase cycle (now hook-driven, not manual):
 
 ```
-SESSION START   → read previous handoff → orient with Grep/Glob, not file dumps
-DURING          → recommend /compact early · cheapest capable model/tool
-SESSION END     → write handoff → update memory → recommend /clear
+SESSION START   → init/scan → rebuild STATE.md ledger → orient with Grep/Glob
+DURING          → cheapest capable model/tool · keep STATE current
+SESSION END     → handoff + update memory + qmd/graphify + commit (automatic)
 ```
 
 **Key insight:** a handoff file costs ~1–2k tokens and makes `/clear`
