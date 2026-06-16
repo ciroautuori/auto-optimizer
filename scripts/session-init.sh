@@ -33,13 +33,22 @@ while IFS= read -r f; do
 done < <(ls -1t docs/HANDOFF-*.md 2>/dev/null | head -20)
 [ -n "$handoffs" ] || handoffs="- (none yet)"$'\n'
 
-# --- collect open tasks from previous handoffs + planning-with-files ---
+# --- analyze ALL accumulated docs (handoffs/prompts/roadmap over time) ---
+# Pulls real carried work, not just a filename index:
+#  1) unchecked checkboxes from every doc + planning-with-files artifacts
+#  2) actionable residue lines from handoffs/prompts (NEXT/TODO/residuo/OUTWARD/manca/...)
 collect_tasks() {
-  # unchecked checkboxes from handoffs + any progress.md / task_plan.md
-  grep -hE '^\s*-\s*\[ \]' \
-    docs/HANDOFF-*.md \
-    $(find . -path ./.git -prune -o \( -name progress.md -o -name task_plan.md \) -print 2>/dev/null) \
-    2>/dev/null | sed -E 's/^\s*//' | sort -u | head -30
+  local planning
+  planning="$(find . -path ./.git -prune -o \( -name progress.md -o -name task_plan.md \) -print 2>/dev/null)"
+  {
+    # unchecked checkboxes anywhere under docs/ + planning files
+    grep -rhE '^\s*-\s*\[ \]' docs/ $planning 2>/dev/null \
+      | sed -E 's/^\s*-\s*\[ \]\s*/- [ ] /'
+    # actionable residue lines from handoffs / prompts (analyze their prose)
+    grep -rhiE '^\s*(\*\*)?(NEXT|TODO|residuo|outward|manca|prossim|da fare|next step|gate residuo)' \
+      docs/HANDOFF-*.md docs/PROMPT-*.md docs/ROADMAP-*.md 2>/dev/null \
+      | sed -E 's/^\s*//; s/\*\*//g; s/^/- [ ] /' | cut -c1-160
+  } 2>/dev/null | sort -u | head -40
 }
 
 if [ ! -f "$STATE" ]; then
