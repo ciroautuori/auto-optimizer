@@ -3,7 +3,7 @@
 # Scans the project + previous handoffs + planning-with-files artifacts,
 # builds/refreshes docs/.session/STATE.md, and prints a compact summary.
 # stdout reaches Claude as context (SessionStart plain stdout is injected).
-set -euo pipefail
+set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
